@@ -25,7 +25,7 @@ button.secondary{background:#23324b;color:#e5ecff}button:disabled{opacity:.5}
 #viewerPanel{height:min(42dvh,380px);min-height:245px;touch-action:none}
 #viewer{width:100%;height:100%;display:block;touch-action:none}
 .info{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:15px 3px 8px}
- .settings{display:flex;gap:12px;flex-wrap:wrap;padding:0 2px 10px;color:#aebed3;font-size:12px;align-items:center}.settings label{display:flex;align-items:center;gap:5px}.settings input,.settings select{background:#202e48;color:#f2f7ff;border:1px solid #41516d;border-radius:7px;padding:6px;font-size:13px}.settings input{width:55px}#position{font-size:13px;font-variant-numeric:tabular-nums;color:#5be1bd;padding:0 3px 10px;line-height:1.5}h2{font-size:15px;margin:0}.hint{color:#9cabc5;font-size:11px}
+ .settings{display:flex;gap:12px;flex-wrap:wrap;padding:0 2px 10px;color:#aebed3;font-size:12px;align-items:center}.settings label{display:flex;align-items:center;gap:5px}.settings input,.settings select{background:#202e48;color:#f2f7ff;border:1px solid #41516d;border-radius:7px;padding:6px;font-size:13px}.settings input{width:55px}.pinch-control{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 2px 12px;color:#b8c8df;font-size:12px}.pinch-control input{flex:1;min-width:120px;accent-color:#5be1bd;touch-action:pan-y}.pinch-control output{font-variant-numeric:tabular-nums;min-width:48px;color:#5be1bd;text-align:right}#position{font-size:13px;font-variant-numeric:tabular-nums;color:#5be1bd;padding:0 3px 10px;line-height:1.5}h2{font-size:15px;margin:0}.hint{color:#9cabc5;font-size:11px}
 #stats{font-size:12px;color:#b8c8df;padding:11px 3px;min-height:38px;line-height:1.5}
 footer{padding:4px 4px 15px;color:#7f93b2;font-size:11px;line-height:1.5}
 </style>
@@ -40,6 +40,7 @@ footer{padding:4px 4px 15px;color:#7f93b2;font-size:11px;line-height:1.5}
 </section>
 <div class="toolbar"><button id="start">Start camera</button><button id="flip" class="secondary" disabled>Switch camera</button><button id="pause" class="secondary" disabled>Freeze pose</button><button id="calibrate" class="secondary" disabled>Calibrate pinch zero</button></div>
 <div class="settings"><label>Palm width <input id="palmSize" type="number" min="5" max="12" step=".5" value="8"> cm</label><label>Camera horizontal FOV <input id="cameraFov" type="number" min="35" max="100" step="1" value="89">°</label><label>Depth mode <select id="depthMode"><option value="hybrid" selected>Hybrid</option><option value="palm">Palm only</option><option value="finger">Finger only</option></select></label></div>
+<div class="pinch-control"><label for="pinchThreshold">Pinch detection threshold</label><input id="pinchThreshold" type="range" min="0.5" max="8" step="0.1" value="2.7" aria-label="Pinch detection threshold in centimetres"><output id="pinchThresholdValue" for="pinchThreshold">2.7 cm</output></div>
 <div id="position" aria-live="polite">Make an OK-shaped pinch with the thumb–index loop visible; calibrate its midpoint as zero.</div>
 <div class="info"><h2>3D pinch tracking</h2><span class="hint">Drag to orbit · pinch to zoom</span></div>
 <section id="viewerPanel" class="panel"><canvas id="viewer" aria-label="Orbitable three-dimensional hand skeleton"></canvas><div class="tag">PINCH MIDPOINT · 3D</div></section>
@@ -76,7 +77,8 @@ async function initialize(THREE,{HandLandmarker,FilesetResolver}){
 
 const $=id=>document.getElementById(id);
 const video=$('video'),overlay=$('overlay'),ctx=overlay.getContext('2d');
-const status=$('state'),stats=$('stats'),start=$('start'),flip=$('flip'),pause=$('pause'),calibrate=$('calibrate'),position=$('position'),palmSize=$('palmSize'),cameraFov=$('cameraFov'),depthMode=$('depthMode');
+const status=$('state'),stats=$('stats'),start=$('start'),flip=$('flip'),pause=$('pause'),calibrate=$('calibrate'),position=$('position'),palmSize=$('palmSize'),cameraFov=$('cameraFov'),depthMode=$('depthMode'),pinchThreshold=$('pinchThreshold'),pinchThresholdValue=$('pinchThresholdValue');
+pinchThreshold.addEventListener('input',()=>{pinchThresholdValue.textContent=Number(pinchThreshold.value).toFixed(1)+' cm';});
 let tracker=null,stream=null,running=false,frozen=false,camera='user',lastVideoTime=-1,lastInference=0,lastSeen=0;
 let origin=null,smoothed=null,currentPose=null,validPose=false,lastPoseTime=0;
 const WORLD_SCALE=3,TRAIL_LIMIT=90;
@@ -231,13 +233,13 @@ function update3D(world,image){
  boneGeometry.computeBoundingSphere();
  pinchMarker.visible=true;
  pinchMarker.position.copy(group.position);
- const closed=pose.separation<.027;
+ const closed=pose.separation<Number(pinchThreshold.value)/100;
  pinchMarker.material.color.setHex(closed?0x5be1bd:0xffcb75);
  const sep=(pose.separation*100).toFixed(1);
  position.textContent=origin?
   'Pinch from zero · X '+(delta.x*100).toFixed(1)+' cm · Y '+(delta.y*100).toFixed(1)+' cm · Z '+(delta.z*100).toFixed(1)+' cm (away)':
   'Estimated pinch depth '+(smoothed.z*100).toFixed(0)+' cm · Tap Calibrate pinch zero to set origin';
- stats.textContent=(closed?'Pinch detected':'Thumb and index apart')+' · Gap '+sep+' cm · Depth '+(pose.wristDepth*100).toFixed(0)+' cm · Palm '+(pose.palm?(pose.palm.z*100).toFixed(0)+' cm':'N/A')+' · Finger '+(pose.finger?(pose.finger.z*100).toFixed(0)+' cm':'N/A')+' · Mode '+pose.selected;
+ stats.textContent=(closed?'Pinch detected':'Thumb and index apart')+' · Gap '+sep+' cm (threshold '+Number(pinchThreshold.value).toFixed(1)+' cm) · Depth '+(pose.wristDepth*100).toFixed(0)+' cm · Palm '+(pose.palm?(pose.palm.z*100).toFixed(0)+' cm':'N/A')+' · Finger '+(pose.finger?(pose.finger.z*100).toFixed(0)+' cm':'N/A')+' · Mode '+pose.selected;
  if(origin&&!frozen){
   trailPositions.push(group.position.clone());
   if(trailPositions.length>TRAIL_LIMIT)trailPositions.shift();
