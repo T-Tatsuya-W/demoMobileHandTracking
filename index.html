@@ -125,7 +125,7 @@ function estimatePosition(image,world){
  const width=video.videoWidth,height=video.videoHeight;
  const fov=Math.max(35,Math.min(100,Number(cameraFov.value)||65))*Math.PI/180;
  const fx=width/(2*Math.tan(fov/2)); const fy=fx; // square-pixel assumption
- const palmMetres=Math.max(.05,Math.min(.12,Number(palmSize.value)||8)/100));
+ const palmMetres=Math.max(.05,Math.min(.12,(Number(palmSize.value)||8)/100));
  const modelPalm=Math.hypot(world[5].x-world[17].x,world[5].y-world[17].y,world[5].z-world[17].z);
  if(!Number.isFinite(modelPalm)||modelPalm<.01)return null;
  const scale=palmMetres/modelPalm;
