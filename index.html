@@ -38,13 +38,13 @@ footer{padding:4px 4px 15px;color:#7f93b2;font-size:11px;line-height:1.5}
 <div id="cameraPlaceholder">Tap <strong>Start camera</strong> to track your hand.</div>
 <div class="tag">FRONT CAMERA · MIRRORED</div>
 </section>
-<div class="toolbar"><button id="start">Start camera</button><button id="flip" class="secondary" disabled>Switch camera</button><button id="pause" class="secondary" disabled>Freeze pose</button><button id="calibrate" class="secondary" disabled>Calibrate origin</button></div>
+<div class="toolbar"><button id="start">Start camera</button><button id="flip" class="secondary" disabled>Switch camera</button><button id="pause" class="secondary" disabled>Freeze pose</button><button id="calibrate" class="secondary" disabled>Calibrate pinch zero</button></div>
 <div class="settings"><label>Palm width <input id="palmSize" type="number" min="5" max="12" step=".5" value="8"> cm</label><label>Camera horizontal FOV <input id="cameraFov" type="number" min="35" max="100" step="1" value="89">°</label></div>
-<div id="position" aria-live="polite">Start tracking, then calibrate to set the current wrist at (0, 0, 0).</div>
-<div class="info"><h2>3D hand view</h2><span class="hint">Drag to orbit · pinch to zoom</span></div>
-<section id="viewerPanel" class="panel"><canvas id="viewer" aria-label="Orbitable three-dimensional hand skeleton"></canvas><div class="tag">21 JOINTS · CALIBRATED POSITION</div></section>
+<div id="position" aria-live="polite">Hold a pinch with your palm facing the camera, then calibrate its midpoint as zero.</div>
+<div class="info"><h2>3D pinch tracking</h2><span class="hint">Drag to orbit · pinch to zoom</span></div>
+<section id="viewerPanel" class="panel"><canvas id="viewer" aria-label="Orbitable three-dimensional hand skeleton"></canvas><div class="tag">PINCH MIDPOINT · 3D</div></section>
 <div id="stats" role="status">The model loads when you start. Initial download requires internet.</div>
-<footer>Estimated depth from assumed palm size and approximate camera FOV. The calibration sets a relative origin, not a measured absolute depth. Rotation, perspective, lens FOV, and hand-model inaccuracies can produce drift. Camera frames stay on this device; dependencies/model download from external CDNs. GitHub Pages serves over HTTPS for camera access.</footer>
+<footer>Keep your palm facing the camera and pinch thumb to index finger. Z is estimated from the apparent size of your palm using an assumed physical palm width and camera FOV. Monocular depth is approximate; rotation, occlusion, focal-length errors and imperfect 3D landmarks cause drift. Camera frames stay on this device; dependencies/model download from external CDNs. GitHub Pages serves over HTTPS for camera access.</footer>
 </main>
 <script type="module">
 const launch=document.getElementById('start');
@@ -78,7 +78,7 @@ const $=id=>document.getElementById(id);
 const video=$('video'),overlay=$('overlay'),ctx=overlay.getContext('2d');
 const status=$('state'),stats=$('stats'),start=$('start'),flip=$('flip'),pause=$('pause'),calibrate=$('calibrate'),position=$('position'),palmSize=$('palmSize'),cameraFov=$('cameraFov');
 let tracker=null,stream=null,running=false,frozen=false,camera='user',lastVideoTime=-1,lastInference=0,lastSeen=0;
-let origin=null,smoothed=null,currentPose=null,validPose=false;
+let origin=null,smoothed=null,currentPose=null,validPose=false,lastPoseTime=0;
 const WORLD_SCALE=3,TRAIL_LIMIT=90;
 const LINKS=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
 const COLORS=[0x5be1bd,0xffcb75,0xa0a0ff,0xff80ae,0x7be2ff];
@@ -92,6 +92,7 @@ const axes=new THREE.AxesHelper(.45);scene.add(axes);
 const originMarker=new THREE.Mesh(new THREE.SphereGeometry(.035,12,8),new THREE.MeshBasicMaterial({color:0xffffff,wireframe:true}));scene.add(originMarker);
 const trailPositions=[];const trailGeom=new THREE.BufferGeometry();const trail=new THREE.Line(trailGeom,new THREE.LineBasicMaterial({color:0xffcb75,transparent:true,opacity:.8}));scene.add(trail);
 const sphereGeometry=new THREE.SphereGeometry(.014,8,6);
+const pinchMarker=new THREE.Mesh(new THREE.SphereGeometry(.042,12,9),new THREE.MeshBasicMaterial({color:0xffcb75}));scene.add(pinchMarker);pinchMarker.visible=false;
 const dots=Array.from({length:21},(_,i)=>{const mesh=new THREE.Mesh(sphereGeometry,new THREE.MeshBasicMaterial({color:i===0?0xffffff:COLORS[Math.min(4,Math.floor((i-1)/4))]}));group.add(mesh);return mesh;});
 const boneGeometry=new THREE.BufferGeometry();const bones=new Float32Array(LINKS.length*6);boneGeometry.setAttribute('position',new THREE.BufferAttribute(bones,3).setUsage(THREE.DynamicDrawUsage));
 const segments=new THREE.LineSegments(boneGeometry,new THREE.LineBasicMaterial({color:0xa5f7df}));group.add(segments);
@@ -117,74 +118,106 @@ ctx.lineWidth=2.6;ctx.strokeStyle='#5be1bd';ctx.lineCap='round';
 for(const [a,b] of LINKS){const A=p(points[a]),B=p(points[b]);ctx.beginPath();ctx.moveTo(...A);ctx.lineTo(...B);ctx.stroke();}
 ctx.fillStyle='#fff';for(const lm of points){const P=p(lm);ctx.beginPath();ctx.arc(...P,3,0,Math.PI*2);ctx.fill();}
 }
-// Reconstruct approximate camera-space wrist position from fixed hand size.
-// We derive projected scale from the model's palm segments in the image rather
-// than a bounding box, so opening and closing fingers affects depth less.
-const PALM_PAIRS=[[5,17],[0,5],[0,9],[0,13],[0,17],[5,9],[9,13],[13,17]];
-function estimatePosition(image,world){
+// Camera coordinate convention: +X right on the mirrored selfie preview,
+// +Y upward, +Z AWAY from camera. World scene uses -Z for away.
+const PALM_PAIRS=[[5,17],[0,9],[0,13],[5,9],[9,13],[13,17]];
+const PINCH_A=4,PINCH_B=8;
+function estimateHand(image,world){
  const width=video.videoWidth,height=video.videoHeight;
+ if(!width||!height)return null;
  const fov=Math.max(35,Math.min(100,Number(cameraFov.value)||89))*Math.PI/180;
- const fx=width/(2*Math.tan(fov/2)); const fy=fx; // square-pixel assumption
+ const fx=width/(2*Math.tan(fov/2)),fy=fx;
  const palmMetres=Math.max(.05,Math.min(.12,(Number(palmSize.value)||8)/100));
- const modelPalm=Math.hypot(world[5].x-world[17].x,world[5].y-world[17].y,world[5].z-world[17].z);
- if(!Number.isFinite(modelPalm)||modelPalm<.01)return null;
- const scale=palmMetres/modelPalm;
- const depths=[];
+ const palmModel=Math.hypot(world[5].x-world[17].x,world[5].y-world[17].y,world[5].z-world[17].z);
+ if(!Number.isFinite(palmModel)||palmModel<.015)return null;
+ const modelScale=palmMetres/palmModel;
+ const estimates=[];
  for(const [a,b] of PALM_PAIRS){
-   const pix=Math.hypot((image[a].x-image[b].x)*width,(image[a].y-image[b].y)*height);
-   // MediaPipe world XY gives an approximate foreshortened length of each segment.
-   const physicalXY=Math.hypot(world[a].x-world[b].x,world[a].y-world[b].y)*scale;
-   if(pix>5&&physicalXY>.005)depths.push(fx*physicalXY/pix);
+  const du=(image[a].x-image[b].x)*width,dv=(image[a].y-image[b].y)*height;
+  const pixels=Math.hypot(du,dv);
+  // Palm is assumed approximately fronto-parallel; world XY provides a
+  // moderate foreshortening correction, not a full 3D pose solution.
+  const modelXY=Math.hypot(world[a].x-world[b].x,world[a].y-world[b].y);
+  if(pixels>7&&modelXY>.009)estimates.push(fx*modelXY*modelScale/pixels);
  }
- if(depths.length<3)return null;
- depths.sort((a,b)=>a-b);
- const z=depths[Math.floor(depths.length/2)];
- if(!Number.isFinite(z)||z<.12||z>3)return null;
- const wrist=image[0];
- // Sign convention: X right in mirrored front preview, Y up, Z away from camera.
+ if(estimates.length<3)return null;
+ estimates.sort((a,b)=>a-b);
+ const wristDepth=estimates[Math.floor(estimates.length/2)];
+ if(!Number.isFinite(wristDepth)||wristDepth<.12||wristDepth>3)return null;
  const mirror=camera==='user'?-1:1;
- return {x:(wrist.x-.5)*mirror*width*z/fx,y:(.5-wrist.y)*height*z/fy,z,scale};
+ const joints=image.map((p,i)=>{
+  // Small finger-specific depth offsets from MediaPipe's hand-relative model.
+  // Use the image's x/y at that depth to locate the joint in camera space.
+  const z=Math.max(.1,wristDepth+(world[i].z-world[0].z)*modelScale);
+  return {x:(p.x-.5)*width*z/fx*mirror,y:(.5-p.y)*height*z/fy,z};
+ });
+ const A=joints[PINCH_A],B=joints[PINCH_B];
+ const pinch={x:(A.x+B.x)/2,y:(A.y+B.y)/2,z:(A.z+B.z)/2};
+ const separation=Math.hypot(A.x-B.x,A.y-B.y,A.z-B.z);
+ return {joints,pinch,separation,wristDepth};
 }
 function updateTrail(){
- trailGeom.setFromPoints(trailPositions.map(p=>new THREE.Vector3(p.x,p.y,p.z)));
+ trailGeom.setFromPoints(trailPositions);
 }
-function update3D(points,image){
- if(!points||!image)return;
- const raw=estimatePosition(image,points);
- if(!raw){validPose=false;calibrate.disabled=true;return;}
- validPose=true;currentPose=raw;calibrate.disabled=false;
+function update3D(world,image){
+ const pose=estimateHand(image,world);
+ if(!pose){validPose=false;calibrate.disabled=true;return;}
+ validPose=true;calibrate.disabled=false;
+ const now=performance.now();
+ const dt=lastPoseTime?Math.min(.15,(now-lastPoseTime)/1000):.04;
+ lastPoseTime=now;
+ // Low-pass the target's POSITION, with faster response for deliberate movement.
+ // Fingertip geometry stays unfiltered so we can see the model's raw estimate.
+ const raw=pose.pinch;
  if(!smoothed)smoothed={...raw};
- else{const alpha=.24;for(const key of ['x','y','z','scale'])smoothed[key]+=(raw[key]-smoothed[key])*alpha;}
- const loc=smoothed;
- // Before calibration, display wrist at zero; after calibration, translate the
- // skeleton by camera-space movement relative to the stored origin.
- const delta=origin?{x:loc.x-origin.x,y:loc.y-origin.y,z:loc.z-origin.z}:{x:0,y:0,z:0};
+ else{
+  const movement=Math.hypot(raw.x-smoothed.x,raw.y-smoothed.y,raw.z-smoothed.z);
+  const cutoff=2+Math.min(10,movement*45);
+  const alpha=1-Math.exp(-2*Math.PI*cutoff*dt);
+  for(const key of ['x','y','z'])smoothed[key]+=alpha*(raw[key]-smoothed[key]);
+ }
+ currentPose={...smoothed};
+ const base=origin||smoothed;
+ const delta={x:smoothed.x-base.x,y:smoothed.y-base.y,z:smoothed.z-base.z};
+ // Keep pinch at the estimated position and reconstruct skeleton around it.
+ const relative=pose.joints.map(j=>new THREE.Vector3(
+  (j.x-raw.x)*WORLD_SCALE,(j.y-raw.y)*WORLD_SCALE,-(j.z-raw.z)*WORLD_SCALE
+ ));
  group.position.set(delta.x*WORLD_SCALE,delta.y*WORLD_SCALE,-delta.z*WORLD_SCALE);
  group.visible=true;
- // Keep the estimated physical hand dimensions, rather than resizing every frame.
- const wrist=points[0];
- const scale=loc.scale*WORLD_SCALE;
- const coords=points.map(p=>new THREE.Vector3(-(p.x-wrist.x)*scale,-(p.y-wrist.y)*scale,-(p.z-wrist.z)*scale));
- coords.forEach((p,i)=>dots[i].position.copy(p));
- LINKS.forEach(([a,b],i)=>{const A=coords[a],B=coords[b];bones.set([A.x,A.y,A.z,B.x,B.y,B.z],i*6);});
- boneGeometry.attributes.position.needsUpdate=true;boneGeometry.computeBoundingSphere();
+ relative.forEach((p,i)=>dots[i].position.copy(p));
+ LINKS.forEach(([a,b],i)=>{const A=relative[a],B=relative[b];bones.set([A.x,A.y,A.z,B.x,B.y,B.z],i*6);});
+ boneGeometry.attributes.position.needsUpdate=true;
+ boneGeometry.computeBoundingSphere();
+ pinchMarker.visible=true;
+ pinchMarker.position.copy(group.position);
+ const closed=pose.separation<.027;
+ pinchMarker.material.color.setHex(closed?0x5be1bd:0xffcb75);
+ const sep=(pose.separation*100).toFixed(1);
  position.textContent=origin?
-   'From origin · X '+(delta.x*100).toFixed(1)+' cm · Y '+(delta.y*100).toFixed(1)+' cm · Z '+(delta.z*100).toFixed(1)+' cm (away from camera)':
-   'Estimated camera distance '+(loc.z*100).toFixed(0)+' cm · Tap Calibrate origin to zero the current position.';
- if(origin&&!frozen){trailPositions.push(group.position.clone());if(trailPositions.length>TRAIL_LIMIT)trailPositions.shift();updateTrail();}
+  'Pinch from zero · X '+(delta.x*100).toFixed(1)+' cm · Y '+(delta.y*100).toFixed(1)+' cm · Z '+(delta.z*100).toFixed(1)+' cm (away)':
+  'Estimated pinch depth '+(smoothed.z*100).toFixed(0)+' cm · Tap Calibrate pinch zero to set origin';
+ stats.textContent=(closed?'Pinch detected':'Thumb and index apart')+' · Tip separation '+sep+' cm · Estimated wrist depth '+(pose.wristDepth*100).toFixed(0)+' cm · Keep palm facing camera';
+ if(origin&&!frozen){
+  trailPositions.push(group.position.clone());
+  if(trailPositions.length>TRAIL_LIMIT)trailPositions.shift();
+  updateTrail();
+ }
 }
 calibrate.addEventListener('click',()=>{
- if(!validPose||!smoothed)return;
- origin={x:smoothed.x,y:smoothed.y,z:smoothed.z};
+ if(!validPose||!currentPose)return;
+ origin={...currentPose};
  trailPositions.length=0;updateTrail();
  group.position.set(0,0,0);
- position.textContent='Origin calibrated · X 0.0 cm · Y 0.0 cm · Z 0.0 cm';
- status.textContent='Origin set';
+ pinchMarker.position.set(0,0,0);
+ position.textContent='Pinch zero set · X 0.0 cm · Y 0.0 cm · Z 0.0 cm';
+ status.textContent='Pinch origin set';
 });
 function resetTrackingOrigin(){
- origin=null;smoothed=null;currentPose=null;validPose=false;calibrate.disabled=true;
- trailPositions.length=0;updateTrail();group.visible=false;
- position.textContent='Track a hand and tap Calibrate origin to set (0, 0, 0).';
+ origin=null;smoothed=null;currentPose=null;validPose=false;lastPoseTime=0;
+ calibrate.disabled=true;trailPositions.length=0;updateTrail();
+ group.visible=false;pinchMarker.visible=false;
+ position.textContent='Hold a pinch with palm facing camera, then tap Calibrate pinch zero.';
 }
 async function initTracker(){if(tracker)return;status.textContent='Loading model…';const wasm=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm');
 const config={baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.55,minTrackingConfidence:.5};
@@ -198,8 +231,8 @@ finally{start.disabled=false;}}
 function track(){if(!running)return;if(!frozen&&video.readyState>=2&&video.currentTime!==lastVideoTime&&performance.now()-lastInference>45){
 lastVideoTime=video.currentTime;lastInference=performance.now();
 try{const result=tracker.detectForVideo(video,lastInference),lm=result.landmarks?.[0],world=result.worldLandmarks?.[0];
-overlayPose(lm);if(lm&&world){update3D(world,lm);lastSeen=performance.now();status.textContent='Tracking hand';const wrist=lm[0];stats.textContent='Hand detected · 21 landmarks · Wrist in image: '+(wrist.x*100).toFixed(0)+'% across, '+(wrist.y*100).toFixed(0)+'% down · Model-relative 3D';}
-else{group.visible=false;validPose=false;calibrate.disabled=true;status.textContent='Looking for hand…';stats.textContent='Hold one hand in front of the front-facing camera, with fingers visible.';}}
+overlayPose(lm);if(lm&&world){update3D(world,lm);lastSeen=performance.now();status.textContent=validPose?'Tracking pinch':'Hand scale unavailable';}
+else{group.visible=false;pinchMarker.visible=false;validPose=false;calibrate.disabled=true;smoothed=null;lastPoseTime=0;status.textContent='Looking for hand…';stats.textContent='Hold one hand in front of the front-facing camera, with fingers visible.';}}
 catch(e){console.error(e);status.textContent='Tracking error';stats.textContent=e.message;running=false;}}
 requestAnimationFrame(track);}
 start.addEventListener('click',async()=>{running=false;await begin();});
