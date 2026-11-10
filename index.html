@@ -39,7 +39,7 @@ footer{padding:4px 4px 15px;color:#7f93b2;font-size:11px;line-height:1.5}
 <div class="tag">FRONT CAMERA · MIRRORED</div>
 </section>
 <div class="toolbar"><button id="start">Start camera</button><button id="flip" class="secondary" disabled>Switch camera</button><button id="pause" class="secondary" disabled>Freeze pose</button><button id="calibrate" class="secondary" disabled>Calibrate origin</button></div>
-<div class="settings"><label>Palm width <input id="palmSize" type="number" min="5" max="12" step=".5" value="8"> cm</label><label>Camera horizontal FOV <input id="cameraFov" type="number" min="35" max="100" step="1" value="65">°</label></div>
+<div class="settings"><label>Palm width <input id="palmSize" type="number" min="5" max="12" step=".5" value="8"> cm</label><label>Camera horizontal FOV <input id="cameraFov" type="number" min="35" max="100" step="1" value="89">°</label></div>
 <div id="position" aria-live="polite">Start tracking, then calibrate to set the current wrist at (0, 0, 0).</div>
 <div class="info"><h2>3D hand view</h2><span class="hint">Drag to orbit · pinch to zoom</span></div>
 <section id="viewerPanel" class="panel"><canvas id="viewer" aria-label="Orbitable three-dimensional hand skeleton"></canvas><div class="tag">21 JOINTS · CALIBRATED POSITION</div></section>
@@ -123,7 +123,7 @@ ctx.fillStyle='#fff';for(const lm of points){const P=p(lm);ctx.beginPath();ctx.a
 const PALM_PAIRS=[[5,17],[0,5],[0,9],[0,13],[0,17],[5,9],[9,13],[13,17]];
 function estimatePosition(image,world){
  const width=video.videoWidth,height=video.videoHeight;
- const fov=Math.max(35,Math.min(100,Number(cameraFov.value)||65))*Math.PI/180;
+ const fov=Math.max(35,Math.min(100,Number(cameraFov.value)||89))*Math.PI/180;
  const fx=width/(2*Math.tan(fov/2)); const fy=fx; // square-pixel assumption
  const palmMetres=Math.max(.05,Math.min(.12,(Number(palmSize.value)||8)/100));
  const modelPalm=Math.hypot(world[5].x-world[17].x,world[5].y-world[17].y,world[5].z-world[17].z);
