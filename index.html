@@ -25,7 +25,7 @@ button.secondary{background:#23324b;color:#e5ecff}button:disabled{opacity:.5}
 #viewerPanel{height:min(42dvh,380px);min-height:245px;touch-action:none}
 #viewer{width:100%;height:100%;display:block;touch-action:none}
 .info{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:15px 3px 8px}
-h2{font-size:15px;margin:0}.hint{color:#9cabc5;font-size:11px}
+ .settings{display:flex;gap:12px;flex-wrap:wrap;padding:0 2px 10px;color:#aebed3;font-size:12px;align-items:center}.settings label{display:flex;align-items:center;gap:5px}.settings input{width:55px;background:#202e48;color:#f2f7ff;border:1px solid #41516d;border-radius:7px;padding:6px;font-size:13px}#position{font-size:13px;font-variant-numeric:tabular-nums;color:#5be1bd;padding:0 3px 10px;line-height:1.5}h2{font-size:15px;margin:0}.hint{color:#9cabc5;font-size:11px}
 #stats{font-size:12px;color:#b8c8df;padding:11px 3px;min-height:38px;line-height:1.5}
 footer{padding:4px 4px 15px;color:#7f93b2;font-size:11px;line-height:1.5}
 </style>
@@ -38,11 +38,13 @@ footer{padding:4px 4px 15px;color:#7f93b2;font-size:11px;line-height:1.5}
 <div id="cameraPlaceholder">Tap <strong>Start camera</strong> to track your hand.</div>
 <div class="tag">FRONT CAMERA · MIRRORED</div>
 </section>
-<div class="toolbar"><button id="start">Start camera</button><button id="flip" class="secondary" disabled>Switch camera</button><button id="pause" class="secondary" disabled>Freeze pose</button></div>
+<div class="toolbar"><button id="start">Start camera</button><button id="flip" class="secondary" disabled>Switch camera</button><button id="pause" class="secondary" disabled>Freeze pose</button><button id="calibrate" class="secondary" disabled>Calibrate origin</button></div>
+<div class="settings"><label>Palm width <input id="palmSize" type="number" min="5" max="12" step=".5" value="8"> cm</label><label>Camera horizontal FOV <input id="cameraFov" type="number" min="35" max="100" step="1" value="65">°</label></div>
+<div id="position" aria-live="polite">Start tracking, then calibrate to set the current wrist at (0, 0, 0).</div>
 <div class="info"><h2>3D hand view</h2><span class="hint">Drag to orbit · pinch to zoom</span></div>
-<section id="viewerPanel" class="panel"><canvas id="viewer" aria-label="Orbitable three-dimensional hand skeleton"></canvas><div class="tag">21 JOINTS · RELATIVE 3D</div></section>
+<section id="viewerPanel" class="panel"><canvas id="viewer" aria-label="Orbitable three-dimensional hand skeleton"></canvas><div class="tag">21 JOINTS · CALIBRATED POSITION</div></section>
 <div id="stats" role="status">The model loads when you start. Initial download requires internet.</div>
-<footer>Estimated hand-relative geometry, not a metric 3D scan or calibrated distance to the phone. Camera frames stay on this device; dependencies/model download from external CDNs. GitHub Pages serves over HTTPS for camera access.</footer>
+<footer>Estimated depth from assumed palm size and approximate camera FOV. The calibration sets a relative origin, not a measured absolute depth. Rotation, perspective, lens FOV, and hand-model inaccuracies can produce drift. Camera frames stay on this device; dependencies/model download from external CDNs. GitHub Pages serves over HTTPS for camera access.</footer>
 </main>
 <script type="module">
 const launch=document.getElementById('start');
@@ -74,8 +76,10 @@ async function initialize(THREE,{HandLandmarker,FilesetResolver}){
 
 const $=id=>document.getElementById(id);
 const video=$('video'),overlay=$('overlay'),ctx=overlay.getContext('2d');
-const status=$('state'),stats=$('stats'),start=$('start'),flip=$('flip'),pause=$('pause');
+const status=$('state'),stats=$('stats'),start=$('start'),flip=$('flip'),pause=$('pause'),calibrate=$('calibrate'),position=$('position'),palmSize=$('palmSize'),cameraFov=$('cameraFov');
 let tracker=null,stream=null,running=false,frozen=false,camera='user',lastVideoTime=-1,lastInference=0,lastSeen=0;
+let origin=null,smoothed=null,currentPose=null,validPose=false;
+const WORLD_SCALE=3,TRAIL_LIMIT=90;
 const LINKS=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
 const COLORS=[0x5be1bd,0xffcb75,0xa0a0ff,0xff80ae,0x7be2ff];
 const renderer=new THREE.WebGLRenderer({canvas:$('viewer'),antialias:true,alpha:true,powerPreference:'low-power'});
@@ -83,8 +87,11 @@ renderer.setPixelRatio(Math.min(devicePixelRatio,1.75));
 const scene=new THREE.Scene(),view=new THREE.PerspectiveCamera(36,1,.01,100);
 view.position.set(0,0,3.1);
 const group=new THREE.Group();scene.add(group);
-const grid=new THREE.GridHelper(2,10,0x263c54,0x1c2b41);grid.rotation.x=Math.PI/2;grid.position.z=-.4;scene.add(grid);
-const sphereGeometry=new THREE.SphereGeometry(.027,8,6);
+const grid=new THREE.GridHelper(3,15,0x263c54,0x1c2b41);grid.rotation.x=Math.PI/2;grid.position.z=-.9;scene.add(grid);
+const axes=new THREE.AxesHelper(.45);scene.add(axes);
+const originMarker=new THREE.Mesh(new THREE.SphereGeometry(.035,12,8),new THREE.MeshBasicMaterial({color:0xffffff,wireframe:true}));scene.add(originMarker);
+const trailPositions=[];const trailGeom=new THREE.BufferGeometry();const trail=new THREE.Line(trailGeom,new THREE.LineBasicMaterial({color:0xffcb75,transparent:true,opacity:.8}));scene.add(trail);
+const sphereGeometry=new THREE.SphereGeometry(.014,8,6);
 const dots=Array.from({length:21},(_,i)=>{const mesh=new THREE.Mesh(sphereGeometry,new THREE.MeshBasicMaterial({color:i===0?0xffffff:COLORS[Math.min(4,Math.floor((i-1)/4))]}));group.add(mesh);return mesh;});
 const boneGeometry=new THREE.BufferGeometry();const bones=new Float32Array(LINKS.length*6);boneGeometry.setAttribute('position',new THREE.BufferAttribute(bones,3).setUsage(THREE.DynamicDrawUsage));
 const segments=new THREE.LineSegments(boneGeometry,new THREE.LineBasicMaterial({color:0xa5f7df}));group.add(segments);
@@ -110,16 +117,74 @@ ctx.lineWidth=2.6;ctx.strokeStyle='#5be1bd';ctx.lineCap='round';
 for(const [a,b] of LINKS){const A=p(points[a]),B=p(points[b]);ctx.beginPath();ctx.moveTo(...A);ctx.lineTo(...B);ctx.stroke();}
 ctx.fillStyle='#fff';for(const lm of points){const P=p(lm);ctx.beginPath();ctx.arc(...P,3,0,Math.PI*2);ctx.fill();}
 }
-function update3D(points){if(!points)return;group.visible=true;
-// World landmarks are in metres relative to an estimated hand centre, not phone-space coordinates.
-// Mirror x for the selfie view and remove translation. Keep the model's depth axis.
-const coords=points.map(p=>new THREE.Vector3(-p.x,-p.y,-p.z));
-const middle=coords[0].clone();coords.forEach(p=>p.sub(middle));
-// Normalize by palm width to make size stable while preserving relative joint depth.
-const palm=Math.max(.035,coords[5].distanceTo(coords[17]));const factor=.85/palm;
-coords.forEach((p,i)=>{p.multiplyScalar(factor);dots[i].position.copy(p);});
-LINKS.forEach(([a,b],i)=>{const A=coords[a],B=coords[b];bones.set([A.x,A.y,A.z,B.x,B.y,B.z],i*6);});
-boneGeometry.attributes.position.needsUpdate=true;boneGeometry.computeBoundingSphere();
+// Reconstruct approximate camera-space wrist position from fixed hand size.
+// We derive projected scale from the model's palm segments in the image rather
+// than a bounding box, so opening and closing fingers affects depth less.
+const PALM_PAIRS=[[5,17],[0,5],[0,9],[0,13],[0,17],[5,9],[9,13],[13,17]];
+function estimatePosition(image,world){
+ const width=video.videoWidth,height=video.videoHeight;
+ const fov=Math.max(35,Math.min(100,Number(cameraFov.value)||65))*Math.PI/180;
+ const fx=width/(2*Math.tan(fov/2)); const fy=fx; // square-pixel assumption
+ const palmMetres=Math.max(.05,Math.min(.12,Number(palmSize.value)||8)/100));
+ const modelPalm=Math.hypot(world[5].x-world[17].x,world[5].y-world[17].y,world[5].z-world[17].z);
+ if(!Number.isFinite(modelPalm)||modelPalm<.01)return null;
+ const scale=palmMetres/modelPalm;
+ const depths=[];
+ for(const [a,b] of PALM_PAIRS){
+   const pix=Math.hypot((image[a].x-image[b].x)*width,(image[a].y-image[b].y)*height);
+   // MediaPipe world XY gives an approximate foreshortened length of each segment.
+   const physicalXY=Math.hypot(world[a].x-world[b].x,world[a].y-world[b].y)*scale;
+   if(pix>5&&physicalXY>.005)depths.push(fx*physicalXY/pix);
+ }
+ if(depths.length<3)return null;
+ depths.sort((a,b)=>a-b);
+ const z=depths[Math.floor(depths.length/2)];
+ if(!Number.isFinite(z)||z<.12||z>3)return null;
+ const wrist=image[0];
+ // Sign convention: X right in mirrored front preview, Y up, Z away from camera.
+ const mirror=camera==='user'?-1:1;
+ return {x:(wrist.x-.5)*mirror*width*z/fx,y:(.5-wrist.y)*height*z/fy,z,scale};
+}
+function updateTrail(){
+ trailGeom.setFromPoints(trailPositions.map(p=>new THREE.Vector3(p.x,p.y,p.z)));
+}
+function update3D(points,image){
+ if(!points||!image)return;
+ const raw=estimatePosition(image,points);
+ if(!raw){validPose=false;calibrate.disabled=true;return;}
+ validPose=true;currentPose=raw;calibrate.disabled=false;
+ if(!smoothed)smoothed={...raw};
+ else{const alpha=.24;for(const key of ['x','y','z','scale'])smoothed[key]+=(raw[key]-smoothed[key])*alpha;}
+ const loc=smoothed;
+ // Before calibration, display wrist at zero; after calibration, translate the
+ // skeleton by camera-space movement relative to the stored origin.
+ const delta=origin?{x:loc.x-origin.x,y:loc.y-origin.y,z:loc.z-origin.z}:{x:0,y:0,z:0};
+ group.position.set(delta.x*WORLD_SCALE,delta.y*WORLD_SCALE,-delta.z*WORLD_SCALE);
+ group.visible=true;
+ // Keep the estimated physical hand dimensions, rather than resizing every frame.
+ const wrist=points[0];
+ const scale=loc.scale*WORLD_SCALE;
+ const coords=points.map(p=>new THREE.Vector3(-(p.x-wrist.x)*scale,-(p.y-wrist.y)*scale,-(p.z-wrist.z)*scale));
+ coords.forEach((p,i)=>dots[i].position.copy(p));
+ LINKS.forEach(([a,b],i)=>{const A=coords[a],B=coords[b];bones.set([A.x,A.y,A.z,B.x,B.y,B.z],i*6);});
+ boneGeometry.attributes.position.needsUpdate=true;boneGeometry.computeBoundingSphere();
+ position.textContent=origin?
+   'From origin · X '+(delta.x*100).toFixed(1)+' cm · Y '+(delta.y*100).toFixed(1)+' cm · Z '+(delta.z*100).toFixed(1)+' cm (away from camera)':
+   'Estimated camera distance '+(loc.z*100).toFixed(0)+' cm · Tap Calibrate origin to zero the current position.';
+ if(origin&&!frozen){trailPositions.push(group.position.clone());if(trailPositions.length>TRAIL_LIMIT)trailPositions.shift();updateTrail();}
+}
+calibrate.addEventListener('click',()=>{
+ if(!validPose||!smoothed)return;
+ origin={x:smoothed.x,y:smoothed.y,z:smoothed.z};
+ trailPositions.length=0;updateTrail();
+ group.position.set(0,0,0);
+ position.textContent='Origin calibrated · X 0.0 cm · Y 0.0 cm · Z 0.0 cm';
+ status.textContent='Origin set';
+});
+function resetTrackingOrigin(){
+ origin=null;smoothed=null;currentPose=null;validPose=false;calibrate.disabled=true;
+ trailPositions.length=0;updateTrail();group.visible=false;
+ position.textContent='Track a hand and tap Calibrate origin to set (0, 0, 0).';
 }
 async function initTracker(){if(tracker)return;status.textContent='Loading model…';const wasm=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm');
 const config={baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.55,minTrackingConfidence:.5};
@@ -127,14 +192,14 @@ try{tracker=await HandLandmarker.createFromOptions(wasm,config);}
 catch(e){console.warn('GPU unavailable; using CPU',e);config.baseOptions.delegate='CPU';tracker=await HandLandmarker.createFromOptions(wasm,config);}
 }
 async function openCamera(){if(stream)stream.getTracks().forEach(t=>t.stop());stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:camera},width:{ideal:640},height:{ideal:480},frameRate:{ideal:24,max:30}}});video.srcObject=stream;video.style.transform=camera==='user'?'scaleX(-1)':'none';await video.play();$('cameraPlaceholder').hidden=true;lastVideoTime=-1;}
-async function begin(){start.disabled=true;try{if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera API unavailable. Open this page over HTTPS in a supported browser.');await initTracker();await openCamera();running=true;frozen=false;pause.textContent='Freeze pose';pause.disabled=false;flip.disabled=false;start.textContent='Restart camera';status.textContent='Looking for hand…';requestAnimationFrame(track);}
+async function begin(){start.disabled=true;resetTrackingOrigin();try{if(!navigator.mediaDevices?.getUserMedia)throw new Error('Camera API unavailable. Open this page over HTTPS in a supported browser.');await initTracker();await openCamera();running=true;frozen=false;pause.textContent='Freeze pose';pause.disabled=false;flip.disabled=false;start.textContent='Restart camera';status.textContent='Looking for hand…';requestAnimationFrame(track);}
 catch(e){console.error(e);status.textContent='Error';stats.textContent=e.message||String(e);$('cameraPlaceholder').hidden=false;}
 finally{start.disabled=false;}}
 function track(){if(!running)return;if(!frozen&&video.readyState>=2&&video.currentTime!==lastVideoTime&&performance.now()-lastInference>45){
 lastVideoTime=video.currentTime;lastInference=performance.now();
 try{const result=tracker.detectForVideo(video,lastInference),lm=result.landmarks?.[0],world=result.worldLandmarks?.[0];
-overlayPose(lm);if(lm&&world){update3D(world);lastSeen=performance.now();status.textContent='Tracking hand';const wrist=lm[0];stats.textContent='Hand detected · 21 landmarks · Wrist in image: '+(wrist.x*100).toFixed(0)+'% across, '+(wrist.y*100).toFixed(0)+'% down · Model-relative 3D';}
-else{group.visible=false;status.textContent='Looking for hand…';stats.textContent='Hold one hand in front of the front-facing camera, with fingers visible.';}}
+overlayPose(lm);if(lm&&world){update3D(world,lm);lastSeen=performance.now();status.textContent='Tracking hand';const wrist=lm[0];stats.textContent='Hand detected · 21 landmarks · Wrist in image: '+(wrist.x*100).toFixed(0)+'% across, '+(wrist.y*100).toFixed(0)+'% down · Model-relative 3D';}
+else{group.visible=false;validPose=false;calibrate.disabled=true;status.textContent='Looking for hand…';stats.textContent='Hold one hand in front of the front-facing camera, with fingers visible.';}}
 catch(e){console.error(e);status.textContent='Tracking error';stats.textContent=e.message;running=false;}}
 requestAnimationFrame(track);}
 start.addEventListener('click',async()=>{running=false;await begin();});
