@@ -8,7 +8,7 @@ A tiny, static, phone-friendly demonstration of monocular hand tracking. Uses yo
 2. Choose **Deploy from a branch**; select **main** and **/(root)**, then save.
 3. Visit **https://t-tatsuya-w.github.io/demoMobileHandTracking/** on your phone.
 4. Tap **Start camera**, grant permission, and hold a hand in frame.
-5. With a hand detected, tap **Calibrate origin** to zero the current wrist position. Move left/right, up/down, and toward/away from the camera to see estimated displacement in centimetres.
+5. Hold a pinch with your palm facing the camera, then tap **Calibrate pinch zero** to set the midpoint between thumb and index finger to (0, 0, 0). Move the pinch to track X/Y/Z displacement in centimetres.
 6. Drag across the 3D panel to orbit; pinch to zoom; use **Freeze pose** to inspect the captured pose.
 
 No build step or server needed. Camera capture needs HTTPS (provided by GitHub Pages) or localhost.
@@ -17,9 +17,9 @@ No build step or server needed. Camera capture needs HTTPS (provided by GitHub P
 
 - 2D normalized image landmarks used to draw the live camera overlay.
 - MediaPipe's **world landmarks** used for the 3D skeleton; these are *estimated hand-relative 3D positions*, not triangulated depth.
-- The 3D skeleton is translated using estimated wrist location in camera coordinates. The depth estimate assumes a physical palm width (default 8 cm) and a horizontal camera FOV (default 65°). The median of several palm-bone perspective estimates is used to reduce sensitivity to finger motion.
-- **Calibrate origin** records the current estimated wrist position and subtracts it from subsequent positions. This measures *relative displacement*, not a known real-world world origin. X is rightward in the mirrored selfie preview, Y upward, Z away from the camera.
-- Distance estimates can drift when the hand turns, when the camera FOV differs from the setting, or when the model's 3D shape is wrong. A single camera cannot guarantee metric depth without additional assumptions or calibration.
+- The 3D skeleton follows the estimated pinch midpoint (thumb tip 4 and index tip 8). Depth uses palm landmarks, assumed palm width (default 8 cm) and horizontal FOV (default 89°), with adaptive positional smoothing.
+- **Calibrate pinch zero** records the current estimated pinch midpoint, then subtracts it from future positions. X is right in the mirrored preview, Y is up, and Z is away from the camera. It is not an absolute world reference.
+- Keep your palm facing the camera; hand rotation, finger occlusion, incorrect palm width or FOV, and imperfect model landmarks can cause drift. Single-camera depth is approximate.
 - Front preview is mirrored like a selfie. Flip cameras via **Switch camera**.
 
 ## Performance and privacy
