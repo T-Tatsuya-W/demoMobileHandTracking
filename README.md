@@ -38,3 +38,9 @@ If the demo does not start: use a modern Chrome/Android browser, enable camera p
 ## Future ideas
 
 Calibrate actual palm size and phone camera intrinsics, improve pose-aware depth solving, landmark snapshots, joint angle readouts, and benchmarking.
+
+## Experimental hybrid depth estimation
+
+The **Depth mode** control switches between **Hybrid** (default), **Palm only**, and **Finger only**. Palm mode compares projected segments between wrist/knuckles; Finger mode uses thumb and index segments (plus middle-finger reference segments). Hybrid combines the robust sub-estimates, with rejection of foreshortened or inconsistent segments. A five-sample rolling median suppresses single-frame jumps. Switching mode clears calibration, so recalibrate your pinch zero.
+
+For best results, hold your thumb and index in a visible loop at a comfortable sideways/three-quarter angle, with bones visible in the camera image. Keep the gesture approximately consistent between calibration and tracking. **Physical depth is not directly measured**: the system still assumes palm width, camera horizontal FOV, and an approximate MediaPipe 3D hand shape. Compare stationary Z-jitter and movement responsiveness across modes before concluding hybrid is more accurate.
