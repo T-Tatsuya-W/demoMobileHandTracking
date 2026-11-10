@@ -58,7 +58,7 @@ launch.addEventListener('click',async()=>{
     output.textContent='Downloading the 3D renderer and hand-tracking library. Please keep this page open.';
     const [three,vision]=await Promise.all([
       import('https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js'),
-      import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/+esm')
+      import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/vision_bundle.mjs')
     ]);
     stateText.textContent='Starting camera…';
     await initialize(three,vision);
@@ -121,7 +121,7 @@ coords.forEach((p,i)=>{p.multiplyScalar(factor);dots[i].position.copy(p);});
 LINKS.forEach(([a,b],i)=>{const A=coords[a],B=coords[b];bones.set([A.x,A.y,A.z,B.x,B.y,B.z],i*6);});
 boneGeometry.attributes.position.needsUpdate=true;boneGeometry.computeBoundingSphere();
 }
-async function initTracker(){if(tracker)return;status.textContent='Loading model…';const wasm=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm');
+async function initTracker(){if(tracker)return;status.textContent='Loading model…';const wasm=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm');
 const config={baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.55,minTrackingConfidence:.5};
 try{tracker=await HandLandmarker.createFromOptions(wasm,config);}
 catch(e){console.warn('GPU unavailable; using CPU',e);config.baseOptions.delegate='CPU';tracker=await HandLandmarker.createFromOptions(wasm,config);}
